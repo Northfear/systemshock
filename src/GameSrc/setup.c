@@ -220,6 +220,13 @@ errtype compute_new_diff(void) {
 errtype difficulty_draw(uchar full) {
     int i;
 
+#ifdef VITA
+    if (setup_mode != SETUP_DIFFICULTY) {
+        // game start text input
+        VitaStartTextInput(1);
+    }
+#endif
+
     uiHideMouse(NULL);
 
     if (full) {
@@ -867,6 +874,7 @@ errtype journey_continue_func(uchar draw_stuff) {
         Ref rid = REF_IMG_bmContinueScreen;
         int i = REFINDEX(rid);
         RefTable *rt = ResReadRefTable(REFID(rid));
+        // crashed here once during save loading on Vita
         if (RefIndexValid(rt, i)) {
             FrameDesc *f = RefLock(rid);
             grs_bitmap bm = f->bm;

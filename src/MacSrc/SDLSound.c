@@ -7,9 +7,46 @@ static snd_digi_parms digi_parms_by_channel[SND_MAX_SAMPLES];
 
 #include <SDL_mixer.h>
 
+#define SND_CACHE_SIZE 256
+
+struct cached_chunk {
+    int snd_ref;
+    Mix_Chunk* mix_chunk;
+};
+
+extern char curr_alog_vol;
+struct cached_chunk cached_chunks[SND_CACHE_SIZE];
+
+Mix_Chunk* get_mix_chunk(int snd_ref)
+{
+    for (int i = 0; i < SND_CACHE_SIZE; ++i) {
+        if(cached_chunks[i].snd_ref == snd_ref) {
+            return cached_chunks[i].mix_chunk;
+        }
+    }
+    return NULL;
+}
+
+void add_mix_chunk(int snd_ref, Mix_Chunk* mix_chunk)
+{
+    int free_index = 0;
+    for (int i = 0; i < SND_CACHE_SIZE; ++i) {
+        if(cached_chunks[i].snd_ref == 0) {
+            free_index = i;
+            break;
+        }
+    }
+
+    if (cached_chunks[free_index].mix_chunk) {
+        Mix_FreeChunk(cached_chunks[free_index].mix_chunk);
+    }
+
+    cached_chunks[free_index].snd_ref = snd_ref;
+    cached_chunks[free_index].mix_chunk = mix_chunk;
+}
+
 static Mix_Chunk *samples_by_channel[SND_MAX_SAMPLES];
 
-extern SDL_AudioStream *cutscene_audiostream;
 extern struct MusicDevice *MusicDev;
 
 extern void AudioStreamCallback(void *userdata, unsigned char *stream, int len);
@@ -19,22 +56,8 @@ int snd_start_digital(void) {
 
     // Startup the sound system
 
-    SDL_AudioSpec spec, obtained;
-    spec.freq = 48000;
-    spec.format = AUDIO_S16SYS;
-    spec.channels = 2;
-    spec.samples = 2048;
-    spec.callback = AudioStreamCallback;
-    spec.userdata = (void *)&cutscene_audiostream;
-
-    extern SDL_AudioDeviceID device;
-    device = SDL_OpenAudioDevice(NULL, 0, &spec, &obtained, 0);
-
-    if (device == 0) {
-        ERROR("Could not open SDL audio: %s", SDL_GetError());
-    } else {
-        INFO("Opened Music Stream, deviceID %d, freq %d, size %d, format %d, channels %d, samples %d", device,
-             obtained.freq, obtained.size, obtained.format, obtained.channels, obtained.samples);
+    for (int i = 0; i < SND_CACHE_SIZE; ++i) {
+        memset(&cached_chunks[i], 0, sizeof(cached_chunks[i]));
     }
 
     if (Mix_Init(MIX_INIT_MP3) < 0) {
@@ -58,11 +81,30 @@ int snd_start_digital(void) {
     return OK;
 }
 
+void snd_stop_music() {
+    Mix_HookMusic(NULL, NULL);
+    Mix_VolumeMusic(curr_alog_vol * ((float)MIX_MAX_VOLUME / 100.f));
+}
+
+void snd_resume_music() {
+    Mix_HookMusic(NULL, NULL);
+    Mix_HookMusic(MusicCallback, (void *)&MusicDev);
+    Mix_VolumeMusic(MIX_MAX_VOLUME);
+}
+
 int snd_sample_play(int snd_ref, int len, uchar *smp, struct snd_digi_parms *dprm) {
 
     // Play one of the VOC format sounds
 
-    Mix_Chunk *sample = Mix_LoadWAV_RW(SDL_RWFromConstMem(smp, len), 1);
+    Mix_Chunk *sample = get_mix_chunk(snd_ref);
+
+    if (sample == NULL) {
+        sample = Mix_LoadWAV_RW(SDL_RWFromConstMem(smp, len), 1);
+        if (sample) {
+            add_mix_chunk(snd_ref, sample);
+        }
+    }
+
     if (sample == NULL) {
         DEBUG("%s: Failed to load sample", __FUNCTION__);
         return ERR_NOEFFECT;
@@ -72,14 +114,17 @@ int snd_sample_play(int snd_ref, int len, uchar *smp, struct snd_digi_parms *dpr
     int channel = Mix_PlayChannel(-1, sample, loops);
     if (channel < 0) {
         DEBUG("%s: Failed to play sample", __FUNCTION__);
+#ifndef VITA
         Mix_FreeChunk(sample);
+#endif
         return ERR_NOEFFECT;
     }
-
+#ifndef VITA
     if (samples_by_channel[channel])
         Mix_FreeChunk(samples_by_channel[channel]);
 
     samples_by_channel[channel] = sample;
+#endif
     digi_parms_by_channel[channel] = *dprm;
     snd_sample_reload_parms(&digi_parms_by_channel[channel]);
 
@@ -88,10 +133,12 @@ int snd_sample_play(int snd_ref, int len, uchar *smp, struct snd_digi_parms *dpr
 
 void snd_end_sample(int hnd_id) {
     Mix_HaltChannel(hnd_id);
+#ifndef VITA
     if (samples_by_channel[hnd_id]) {
         Mix_FreeChunk(samples_by_channel[hnd_id]);
         samples_by_channel[hnd_id] = NULL;
     }
+#endif
 }
 
 bool snd_sample_playing(int hnd_id) { return Mix_Playing(hnd_id); }
@@ -105,8 +152,6 @@ void snd_kill_all_samples(void) {
 
     // assume we want these too
     //    StopTheMusic(); // no, don't stop the music
-    if (cutscene_audiostream != NULL)
-        SDL_AudioStreamClear(cutscene_audiostream);
 }
 
 void snd_sample_reload_parms(snd_digi_parms *sdp) {

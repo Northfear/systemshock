@@ -112,6 +112,21 @@ enum TEMP_STR_ {
     REF_STR_MousNorm,
     REF_STR_MousInv,
 
+#ifdef VITA
+    REF_STR_VitaOptions = 0x11000010,
+    REF_STR_GyroAiming,
+    REF_STR_GyroOff,
+    REF_STR_GyroOn,
+    REF_STR_GyroLookSpeed,
+    REF_STR_ControllerLookSpeed,
+
+    REF_STR_VitaRes1,
+    REF_STR_VitaRes2,
+    REF_STR_VitaRes3,
+    REF_STR_VitaRes4,
+    REF_STR_VitaRes5,
+#endif
+
     REF_STR_Seqer    = 0x20000000,
     REF_STR_ADLMIDI,
     REF_STR_NativeMI,

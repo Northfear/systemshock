@@ -91,6 +91,11 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #define STATUS_HEIGHT 20
 #define STATUS_WIDTH  312
 
+#ifdef VITA
+#include "sdl_events.h"
+void vita_input_init(uchar butid);
+#endif
+
 LGCursor option_cursor;
 grs_bitmap option_cursor_bmap;
 
@@ -353,6 +358,20 @@ static char *_get_temp_string(int num) {
         case REF_STR_MousLook: return "Mouselook";
         case REF_STR_MousNorm: return "Normal";
         case REF_STR_MousInv:  return "Inverted";
+
+#ifdef VITA
+        case REF_STR_VitaOptions: return "Vita Input";
+        case REF_STR_GyroAiming: return "Gyro Aiming";
+        case REF_STR_GyroOn: return "Enabled";
+        case REF_STR_GyroOff: return "Disabled";
+        case REF_STR_ControllerLookSpeed: return "Look Speed";
+        case REF_STR_GyroLookSpeed: return "Gyro Speed";
+        case REF_STR_VitaRes1: return "320 x 200";
+        case REF_STR_VitaRes2: return "480 x 272";
+        case REF_STR_VitaRes3: return "640 x 400";
+        case REF_STR_VitaRes4: return "640 x 480";
+        case REF_STR_VitaRes5: return "960 x 544";
+#endif
 
         case REF_STR_Seqer:    return "Midi Player";
         case REF_STR_ADLMIDI:  return "ADLMIDI";
@@ -889,6 +908,10 @@ uchar textlist_handler(uiEvent *ev, uchar butid) {
                 if (st->currstring >= 0)
                     st->dealfunc(butid, st->currstring);
             } else if (!st->modified) {
+#ifdef VITA
+                // savegame text input
+                VitaStartTextInput(0);
+#endif
                 string_message_info(st->selectprompt);
                 if (st->selectprompt)
                     textlist_select_line(st, butid, line, FALSE);
@@ -1273,6 +1296,12 @@ void wrapper_init(void) {
         standard_button_rect(&r, i, 2, 3, 5);
         pushbutton_init(i, keyequivs[i], REF_STR_WrapperText + i, wrapper_pushbutton_func, &r);
     }
+
+#ifdef VITA
+    standard_button_rect(&r, 8, 2, 3, 5);
+    pushbutton_init(8, 'v', REF_STR_VitaOptions, vita_input_init, &r);
+#endif
+
 #ifdef DEMO
     dim_pushbutton(LOAD_BUTTON);
     dim_pushbutton(SAVE_BUTTON);
@@ -1826,6 +1855,50 @@ void input_screen_init(void) {
     opanel_redraw(TRUE);
 }
 
+#ifdef VITA
+void vita_input_init(uchar butid) {
+    LGRect r;
+    char *keys;
+    int i = 0;
+    uchar sliderbase;
+    extern uchar inp6d_headset;
+
+    keys = get_temp_string(REF_STR_KeyEquivs1);
+    clear_obuttons();
+
+    // gyro aiming
+    standard_button_rect(&r, i, 2, 2, 2);
+    r.ul.x -= 1;
+    multi_init(i, keys[0], REF_STR_GyroAiming, REF_STR_GyroOff, ID_NULL,
+                sizeof(gShockPrefs.gyroAiming), &gShockPrefs.gyroAiming, 2, NULL, &r);
+    i++;
+
+    sliderbase = ((r.lr.x - r.ul.x - 1) * 5 / 15);
+
+    standard_slider_rect(&r, i, 2, 1);
+    r.ul.x -= 1;
+    slider_init(i, REF_STR_GyroLookSpeed, sizeof(ushort), FALSE, &gShockPrefs.gyroAimingSpeed, 15,
+                sliderbase, NULL, &r);
+    i++;
+
+    sliderbase = ((r.lr.x - r.ul.x - 1) * 10 / 25);
+
+    standard_slider_rect(&r, i, 2, 1);
+    r.ul.x -= 1;
+    slider_init(i, REF_STR_ControllerLookSpeed, sizeof(ushort), FALSE, &gShockPrefs.controllerAimingSpeed, 25,
+                sliderbase, NULL, &r);
+    i++;
+
+    standard_button_rect(&r, 5, 2, 2, 1);
+    pushbutton_init(RETURN_BUTTON, keys[3], REF_STR_OptionsText + 5, wrapper_pushbutton_func, &r);
+
+    // FIXME: Cannot pass a keycode with modifier flags as uchar
+    keywidget_init(QUIT_BUTTON, /*KB_FLAG_ALT |*/ 'x', wrapper_pushbutton_func);
+
+    opanel_redraw(TRUE);
+}
+#endif
+
 //gamma param not used here; see SetSDLPalette() in Shock.c
 void gamma_slider_dealfunc(ushort gamma_qvar) {
     gr_set_gamma_pal(0, 256, 0);
@@ -1989,7 +2062,11 @@ void screenmode_screen_init(void) {
         uchar mode_ok = FALSE;
         char j = 0;
         standard_button_rect(&r, i, 2, 2, 2);
+#ifdef VITA
+        pushbutton_init(i, keys[i], REF_STR_VitaRes1 + i, screenmode_change, &r);
+#else
         pushbutton_init(i, keys[i], REF_STR_ScreenModeText + i, screenmode_change, &r);
+#endif
         while ((grd_info.modes[j] != -1) && !mode_ok) {
             if (grd_info.modes[j] == svga_mode_data[i])
                 mode_ok = TRUE;

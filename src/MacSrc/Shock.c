@@ -46,6 +46,48 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #include "status.h"
 #include "version.h"
 
+#ifdef VITA
+#include <psp2/kernel/clib.h>
+#include <psp2/power.h>
+#include <vita2d.h>
+#include <unistd.h>
+
+int _newlib_heap_size_user = 256 * 1024 * 1024;
+
+enum
+{
+    VITA_FULLSCREEN_WIDTH = 960,
+    VITA_FULLSCREEN_HEIGHT = 544,
+};
+
+SDL_Surface *surface = NULL;
+vita2d_texture *texBuffer;
+uint8_t *palettedTexturePointer;
+SDL_Rect destRect;
+SDL_GameController *gameController;
+SDL_Sensor *vitaGyro;
+
+void *memcpy(void *destination, const void *source, size_t n)
+{
+	return sceClibMemcpy(destination, source, n);
+}
+
+void *memset(void *destination, int c, size_t n)
+{
+	return sceClibMemset(destination, c, n);
+}
+
+void *memmove(void *destination, const void *source, size_t n)
+{
+	return sceClibMemmove(destination, source, n);
+}
+
+int memcmp(const void *arr1, const void *arr2, size_t n)
+{
+	return sceClibMemcmp(arr1, arr2, n);
+}
+#endif
+
 //--------------------
 //  Globals
 //--------------------
@@ -77,10 +119,84 @@ extern void CreateDefaultKeybindsFile(void);
 extern void LoadHotkeyKeybinds(void);
 extern void LoadMoveKeybinds(void);
 
+#ifdef VITA
+void OpenController()
+{
+    for (int i = 0; i < SDL_NumJoysticks(); ++i) {
+        if (SDL_IsGameController(i)) {
+            gameController = SDL_GameControllerOpen(i);
+        }
+    }
+}
+
+void CloseController()
+{
+    if (SDL_GameControllerGetAttached(gameController)) {
+        SDL_GameControllerClose(gameController);
+        gameController = NULL;
+    }
+}
+
+void OpenGyro()
+{
+    for (int i = 0; i < SDL_NumSensors(); ++i) {
+        if (SDL_SensorGetDeviceType(i) == SDL_SENSOR_GYRO) {
+            vitaGyro = SDL_SensorOpen(i);
+        }
+    }
+}
+
+void SetRenderRect(int width, int height)
+{
+    // screen scaling calculation
+    destRect.x = 0;
+    destRect.y = 0;
+    destRect.w = width;
+    destRect.h = height;
+
+    int isFullScreen = 1;
+
+    if ( width != VITA_FULLSCREEN_WIDTH || height != VITA_FULLSCREEN_HEIGHT ) {
+        if ( isFullScreen ) {
+            //vita2d_texture_set_filters(texBuffer, SCE_GXM_TEXTURE_FILTER_LINEAR, SCE_GXM_TEXTURE_FILTER_LINEAR);
+            if (((float)( VITA_FULLSCREEN_WIDTH ) / VITA_FULLSCREEN_HEIGHT ) >= ((float)( width ) / height ) ) {
+                const float scale = (float)( VITA_FULLSCREEN_HEIGHT ) / height;
+                destRect.w = (int32_t)((float)( width ) * scale );
+                destRect.h = VITA_FULLSCREEN_HEIGHT;
+                destRect.x = ( VITA_FULLSCREEN_WIDTH - destRect.w ) / 2;
+            }
+            else {
+                const float scale = (float)( VITA_FULLSCREEN_WIDTH ) / width;
+                destRect.w = VITA_FULLSCREEN_WIDTH;
+                destRect.h = (int32_t)( (float)( height ) * scale );
+                destRect.y = ( VITA_FULLSCREEN_HEIGHT - destRect.h ) / 2;
+            }
+        }
+        else {
+            // center game area
+            destRect.x = ( VITA_FULLSCREEN_WIDTH - width ) / 2;
+            destRect.y = ( VITA_FULLSCREEN_HEIGHT - height ) / 2;
+        }
+    }
+}
+#endif
+
 //------------------------------------------------------------------------------------
 //		Main function.
 //------------------------------------------------------------------------------------
 int main(int argc, char **argv) {
+#ifdef VITA
+    if (chdir(VITA_PATH) != 0)
+    {
+        sceClibPrintf("Unable to chdir!\n");
+        return 1;
+    }
+
+	scePowerSetArmClockFrequency(444);
+	scePowerSetBusClockFrequency(222);
+	scePowerSetGpuClockFrequency(222);
+	scePowerSetGpuXbarClockFrequency(166);
+#endif
     // Save the arguments for later
 
     num_args = argc;
@@ -159,7 +275,73 @@ bool CheckArgument(char *arg) {
     return false;
 }
 
+#ifdef VITA2D
+void InitVita2D(int width, int height)
+{
+    vita2d_init();
+
+    window = SDL_CreateWindow("", 0, 0, width, height, 0);
+
+    vita2d_texture_set_alloc_memblock_type( SCE_KERNEL_MEMBLOCK_TYPE_USER_CDRAM_RW );
+    texBuffer = vita2d_create_empty_texture_format(width, height, SCE_GXM_TEXTURE_FORMAT_P8_ABGR);
+    palettedTexturePointer = (uint8_t*)(vita2d_texture_get_datap(texBuffer));
+    memset(palettedTexturePointer, 0, width * height * sizeof(uint8_t));
+
+    SetRenderRect(width, height);
+}
+
+void ClearVita2D()
+{
+    if (window != NULL) {
+        SDL_DestroyWindow(window);
+        window = NULL;
+    }
+
+    vita2d_fini();
+
+    if (texBuffer != NULL) {
+        vita2d_free_texture(texBuffer);
+        texBuffer = NULL;
+    }
+}
+#endif
+
 void InitSDL() {
+#ifdef VITA2D
+    SDL_SetHint(SDL_HINT_TOUCH_MOUSE_EVENTS, "0");
+
+    if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_TIMER | SDL_INIT_AUDIO | SDL_INIT_GAMECONTROLLER | SDL_INIT_SENSOR) < 0) {
+        DEBUG("%s: Init failed", __FUNCTION__);
+    }
+
+    gr_init();
+
+    extern short svga_mode_data[];
+    gr_set_mode(svga_mode_data[gShockPrefs.doVideoMode], TRUE);
+
+    INFO("Setting up screen and render contexts");
+
+    // Create a canvas to draw to
+    SetupOffscreenBitmaps(grd_cap->w, grd_cap->h);
+
+    InitVita2D(grd_cap->w, grd_cap->h);
+
+    OpenController();
+    OpenGyro();
+
+    // Create the palette
+    sdlPalette = SDL_AllocPalette(256);
+
+    // Setup the screen
+    svga_screen = cit_screen = gr_alloc_screen(grd_cap->w, grd_cap->h);
+    gr_set_screen(svga_screen);
+
+    gr_alloc_ipal();
+
+    atexit(SDL_Quit);
+
+    SDLDraw();
+#else
     SDL_SetHint(SDL_HINT_NO_SIGNAL_HANDLERS, "1");
     SDL_SetHint(SDL_HINT_RENDER_DRIVER, "opengl");
     if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_TIMER | SDL_INIT_AUDIO) < 0) {
@@ -194,8 +376,18 @@ void InitSDL() {
     char window_title[128];
     sprintf(window_title, "System Shock - %s", SHOCKOLATE_VERSION);
 
+#ifdef VITA
+    SDL_SetHint(SDL_HINT_TOUCH_MOUSE_EVENTS, "0");
+    window = SDL_CreateWindow(window_title, SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, grd_cap->w, grd_cap->h,
+                              SDL_WINDOW_HIDDEN | SDL_WINDOW_RESIZABLE | SDL_WINDOW_ALLOW_HIGHDPI);
+    SDL_Init(SDL_INIT_GAMECONTROLLER | SDL_INIT_SENSOR);
+    SetRenderRect(grd_cap->w, grd_cap->h);
+    OpenController();
+    OpenGyro();
+#else
     window = SDL_CreateWindow(window_title, SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, grd_cap->w, grd_cap->h,
                               SDL_WINDOW_HIDDEN | SDL_WINDOW_RESIZABLE | SDL_WINDOW_ALLOW_HIGHDPI | SDL_WINDOW_OPENGL);
+#endif
 
     // Create the palette
 
@@ -224,6 +416,7 @@ void InitSDL() {
     SDLDraw();
 
     SDL_ShowWindow(window);
+#endif
 }
 
 SDL_Color gamePalette[256];
@@ -275,9 +468,34 @@ void SetSDLPalette(int index, int count, uchar *pal) {
 
     if (should_opengl_swap())
         opengl_change_palette();
+#ifdef VITA2D
+    uint32_t palette32Bit[256u];
+
+    if (!surface) {
+        surface = SDL_CreateRGBSurface(0, 1, 1, 32, 0x000000ff, 0x0000ff00, 0x00ff0000, 0xff000000);
+    }
+
+    for ( size_t i = 0; i < 256u; ++i ) {
+        palette32Bit[i] = SDL_MapRGBA(surface->format, gamePalette[i].r, gamePalette[i].g, gamePalette[i].b, gamePalette[i].a);
+    }
+
+    memcpy(vita2d_texture_get_palette(texBuffer), palette32Bit, sizeof(uint32_t) * 256);
+#endif
 }
 
 void SDLDraw() {
+#ifdef VITA2D
+    SDL_memcpy(palettedTexturePointer, drawSurface->pixels, gScreenWide * gScreenHigh * sizeof(uint8_t));
+
+    vita2d_start_drawing();
+
+    vita2d_draw_rectangle(0, 0, VITA_FULLSCREEN_WIDTH, VITA_FULLSCREEN_HEIGHT, 0xff000000);
+    vita2d_draw_texture_scale(texBuffer, destRect.x, destRect.y, (float)(destRect.w) / gScreenWide,
+                                (float)(destRect.h) / gScreenHigh);
+    vita2d_end_drawing();
+    vita2d_common_dialog_update();
+    vita2d_swap_buffers();
+#else
     if (should_opengl_swap()) {
         sdlPalette->colors[255].a = 0x00;
     }
@@ -290,7 +508,11 @@ void SDLDraw() {
     }
 
     SDL_Rect srcRect = {0, 0, gScreenWide, gScreenHigh};
+#ifdef VITA
+    SDL_RenderCopy(renderer, texture, &srcRect, &destRect);
+#else
     SDL_RenderCopy(renderer, texture, &srcRect, NULL);
+#endif
     SDL_DestroyTexture(texture);
 
     if (should_opengl_swap()) {
@@ -299,6 +521,7 @@ void SDLDraw() {
         SDL_RenderPresent(renderer);
         SDL_RenderClear(renderer);
     }
+#endif
 }
 
 bool MouseCaptured = FALSE;

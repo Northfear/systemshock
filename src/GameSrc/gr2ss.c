@@ -110,6 +110,12 @@ void ss_scale_string(char *s, short x, short y) {
                 use_font = RES_megaMediumLEDFont;
             break;
         }
+
+#ifdef VITA
+        // in order to have a working 960*544 font
+        use_font = ID_NULL;
+#endif
+
 #ifdef STEREO_SUPPORT
         if ((rv == SVGA_CONV_SCREEN) && inp6d_stereo_active) {
             if (use_font == ID_NULL) {

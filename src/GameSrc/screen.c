@@ -150,10 +150,18 @@ errtype screen_init(void) {
 
 #ifdef SVGA_SUPPORT
     gr2ss_register_init(0, 320, 200);
+#ifdef VITA
+    gr2ss_register_mode(0, 480, 272);
+#else
     gr2ss_register_mode(0, 320, 400);
+#endif
     gr2ss_register_mode(0, 640, 400);
     gr2ss_register_mode(0, 640, 480);
+#ifdef VITA
+    gr2ss_register_mode(0, 960, 544);
+#else
     gr2ss_register_mode(0, 1024, 768);
+#endif
 #ifdef STEREO_SUPPORT
     if (i6d_device == I6D_VFX1) {
         Warning(("size = %d, %d!\n", i6d_ss->scr_w, i6d_ss->scr_h));

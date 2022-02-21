@@ -135,6 +135,21 @@ message(STATUS "Version is ${PROJECT_VERSION}${PROJECT_REVERSION_STRING}")
 configure_file("${CMAKE_SOURCE_DIR}/src/GameSrc/Headers/shockolate_version.h.in"
 	"${CMAKE_BINARY_DIR}/src/GameSrc/Headers/shockolate_version.h" )
 
+if(VITA)
+	add_definitions(-DVITA)
+	add_definitions(-DVITA2D)
+	include_directories(src/vita)
+	set(stratagus_SRCS ${stratagus_SRCS} ${vita_SRCS})
+	set(VITA_FLAGS "-Ofast -mcpu=cortex-a9 -mfpu=neon -fgraphite-identity -floop-nest-optimize -fno-lto")
+	set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} ${VITA_FLAGS}")
+	set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${VITA_FLAGS}")
+	set(VITA_LIBS "-lSDL2 -lvita2d -pthread -ljpeg -lpng -lwebp -lz -lvorbisfile -lvorbis -logg -lmikmod -lScePower_stub -lSceAudio_stub -lSceCtrl_stub -lSceHid_stub \
+	-lSceTouch_stub -lSceDisplay_stub -lSceGxm_stub -lSceAppMgr_stub -lSceSysmodule_stub -lSceCommonDialog_stub -lFLAC -lmpg123 -lSceMotion_stub -lSceAppUtil_stub \
+	-fno-builtin-memcpy -fno-builtin-memset -fno-builtin-memmove -fno-builtin-memcmp")
+	SET(CMAKE_CXX_STANDARD_LIBRARIES "${VITA_LIBS}")
+	include("${CMAKE_SOURCE_DIR}/vita/vita.cmake")
+endif()
+
 # Configuration done. Print features
 feature_summary(WHAT ENABLED_FEATURES DESCRIPTION "Enabled features:")
 feature_summary(WHAT DISABLED_FEATURES DESCRIPTION "Disabled features:")

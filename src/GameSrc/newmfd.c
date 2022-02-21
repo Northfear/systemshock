@@ -613,6 +613,24 @@ void mfd_change_slot(ubyte mfd_id, ubyte new_slot) {
     return;
 }
 
+#ifdef VITA
+void mfd_next_slot(ubyte mfd_id) {
+    int new_slot = player_struct.mfd_current_slots[mfd_id] + 1;
+    if (new_slot >= MFD_NUM_BTTNS) {
+        new_slot = 0;
+    }
+    mfd_change_slot(mfd_id, new_slot);
+}
+
+void mfd_previous_slot(ubyte mfd_id) {
+    int new_slot = player_struct.mfd_current_slots[mfd_id] - 1;
+    if (new_slot < 0) {
+        new_slot = MFD_NUM_BTTNS - 1;
+    }
+    mfd_change_slot(mfd_id, new_slot);
+}
+#endif
+
 // ---------------------------------------------------------------------------
 // mfd_grab()
 //

@@ -485,10 +485,18 @@ uchar pend_check(void) {
 #define LEFT_ARROW_CODE  0x7B
 #define RIGHT_ARROW_CODE 0x7C
 
+#ifdef VITA
+// map scroll with analogs on Vita
+#define KP_UP_CODE       13
+#define KP_DOWN_CODE     1
+#define KP_LEFT_CODE     0
+#define KP_RIGHT_CODE    2
+#else
 #define KP_UP_CODE       0x5B
 #define KP_DOWN_CODE     0x54
 #define KP_LEFT_CODE     0x56
 #define KP_RIGHT_CODE    0x58
+#endif
 
 uchar amap_scroll_handler(uiEvent *ev, LGRegion *reg, intptr_t v) {
     int elapsed, now;

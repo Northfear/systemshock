@@ -211,8 +211,14 @@ void change_svga_screen_mode() {
     uchar mode_change = FALSE;
     short temp;
 
+#ifdef VITA
+    // Black screen on startup with 320x200 resolution otherwise. On PC too
+    mode_change = TRUE;
+#else
     if (convert_use_mode != mode_id)
         mode_change = TRUE;
+#endif
+
     if (mode_change) {
         int retval = -1;
 

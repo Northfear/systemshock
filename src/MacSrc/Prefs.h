@@ -59,6 +59,12 @@ typedef struct {
     // 1 => bilinear
     // TODO: add trilinear, anisotropic?
     short doTextureFilter;
+
+#ifdef VITA
+    bool gyroAiming;
+    short gyroAimingSpeed;
+    short controllerAimingSpeed;
+#endif
 } ShockPrefs;
 
 //--------------------

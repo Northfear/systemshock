@@ -28,6 +28,10 @@
 
 #include "log.h"
 
+#ifdef VITA
+#include <psp2/kernel/clib.h>
+#endif
+
 static struct {
   void *udata;
   log_LockFn lock;
@@ -112,7 +116,13 @@ void log_log(int level, const char *file, int line, const char *fmt, ...) {
     fprintf(stderr, "%s %-5s %s:%d: ", buf, level_names[level], file, line);
 #endif
     va_start(args, fmt);
+#ifdef VITA
+    char msg[200];
+    vsprintf(msg, fmt, args);
+    sceClibPrintf("%s\n", msg);
+#else
     vfprintf(stderr, fmt, args);
+#endif
     va_end(args);
     fprintf(stderr, "\n");
   }

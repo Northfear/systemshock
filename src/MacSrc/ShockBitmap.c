@@ -39,7 +39,10 @@ void ChangeScreenSize(int width, int height) {
         return;
 
     INFO("ChangeScreenSize");
-
+#ifdef VITA2D
+    ClearVita2D();
+    InitVita2D(width, height);
+#else
     SDL_RenderClear(renderer);
 
     extern bool fullscreenActive;
@@ -49,7 +52,7 @@ void ChangeScreenSize(int width, int height) {
     SDL_SetWindowPosition(window, SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED);
 
     SDL_RenderSetLogicalSize(renderer, width, height);
-
+#endif
     SetupOffscreenBitmaps(width, height);
 
     gScreenWide = width;

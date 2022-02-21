@@ -34,6 +34,313 @@ extern SDL_Renderer *renderer;
 
 bool fullscreenActive = false;
 
+#ifdef VITA
+#include <math.h>
+#include "Shock.h"
+#include "Prefs.h"
+#include "rect.h"
+#include "mfdext.h"
+
+#define VITA_TEXT_BUFFER_SIZE 32
+
+enum
+{
+    CONTROLLER_L_DEADZONE = 15000,
+    CONTROLLER_L_RUN_DEADZONE = 32500,
+    CONTROLLER_R_DEADZONE = 4000,
+    VITA_FULLSCREEN_WIDTH = 960,
+    VITA_FULLSCREEN_HEIGHT = 544
+};
+
+enum StanceState
+{
+    Stand,
+    Crouch,
+    Prone
+};
+
+// cursor movement speed
+const float CURSOR_SPEED = 0.000005f;
+// bigger value correndsponds to faster pointer movement speed with bigger stick axis values
+const float CONTROLLER_AXIS_SPEEDUP = 1.03f;
+// size of rear swap for MFD switching
+const float MFD_SWIPE_SIZE = 0.3f;
+const float GYRO_SPEED_MOD = 0.05f;
+
+extern SDL_GameController *gameController;
+extern SDL_Sensor *vitaGyro;
+extern ShockPrefs gShockPrefs;
+
+// rear touchpad stuff
+SDL_FingerID first_finger_rear_id = 0;
+int16_t num_rear_touches = 0;
+float rear_start_pos_y = 0;
+
+// all kind of control related stuff
+int16_t controllerLeftXAxis = 0;
+int16_t controllerLeftYAxis = 0;
+int16_t controllerRightXAxis = 0;
+int16_t controllerRightYAxis = 0;
+uint32_t lastControllerTime = 0;
+float emulatedPointerPosX;
+float emulatedPointerPosY;
+SDL_FingerID firstFingerId = 0;
+int16_t numTouches = 0;
+
+int relativeRightXAxis = 0;
+int relativeRightYAxis = 0;
+
+enum StanceState next_control_stance = Crouch;
+bool leftActive = false;
+bool rightActive = false;
+bool forwardActive = false;
+bool backActive = false;
+bool isRunning = false;
+
+// hacky way of dealing with Vita text input
+char vita_input_text[VITA_TEXT_BUFFER_SIZE];
+int vita_text_input_active;
+int per_frame_keydown_emulation = 0;
+int text_input_active = 0;
+int current_char_position = 0;
+int current_key_down = 1;
+
+
+void EmulateTextInput()
+{
+    if (!text_input_active)
+        return;
+
+    char current_char = vita_input_text[current_char_position];
+
+    if (current_key_down && per_frame_keydown_emulation) {
+        SDL_Event ev_txt;
+        ev_txt.type = SDL_TEXTINPUT;
+        ev_txt.text.text[0] = current_char;
+        ev_txt.text.text[1] = '\0';
+        SDL_PushEvent(&ev_txt);
+    } else {
+        // use only lower case for button up events
+        if (isupper(current_char)) {
+            current_char = tolower(current_char);
+        }
+
+        SDL_Event ev_kbd;
+        ev_kbd.type = SDL_KEYUP;
+        ev_kbd.key.state = SDL_RELEASED;
+        ev_kbd.key.keysym.mod = SDL_GetModState();
+        ev_kbd.key.keysym.sym = current_char;
+        ev_kbd.key.keysym.scancode = SDL_GetScancodeFromKey(current_char);
+        SDL_PushEvent(&ev_kbd);
+        current_char_position++;
+    }
+
+    current_key_down = current_key_down ? 0 : 1;
+
+    if (vita_input_text[current_char_position] == '\0' || current_char_position >= VITA_TEXT_BUFFER_SIZE) {
+        current_char_position = 0;
+        text_input_active = 0;
+    }
+}
+
+void ProcessControllerAxisMotion()
+{
+    const uint32_t currentTime = SDL_GetTicks();
+    const uint32_t deltaTime = currentTime - lastControllerTime;
+    lastControllerTime = currentTime;
+
+    relativeRightXAxis = (int)((0.000005f + 0.000001f * gShockPrefs.controllerAimingSpeed) * controllerRightXAxis * deltaTime);
+    relativeRightYAxis = (int)((0.000005f + 0.000001f * gShockPrefs.controllerAimingSpeed) * controllerRightYAxis * deltaTime);
+
+    if (controllerRightXAxis != 0 || controllerRightYAxis != 0) {
+        int physical_width, physical_height;
+        SDL_GetWindowSize(window, &physical_width, &physical_height);
+
+        const int16_t xSign = (controllerRightXAxis > 0) - (controllerRightXAxis < 0);
+        const int16_t ySign = (controllerRightYAxis > 0) - (controllerRightYAxis < 0);
+
+        emulatedPointerPosX += pow(abs(controllerRightXAxis), CONTROLLER_AXIS_SPEEDUP) * xSign * deltaTime
+                            * CURSOR_SPEED * ((float)physical_width / VITA_FULLSCREEN_WIDTH);
+        emulatedPointerPosY += pow(abs(controllerRightYAxis), CONTROLLER_AXIS_SPEEDUP) * ySign * deltaTime
+                            * CURSOR_SPEED * ((float)physical_height / VITA_FULLSCREEN_HEIGHT);
+
+        if (emulatedPointerPosX < 0)
+            emulatedPointerPosX = 0;
+        else if (emulatedPointerPosX >= physical_width)
+            emulatedPointerPosX = physical_width - 1;
+
+        if (emulatedPointerPosY < 0)
+            emulatedPointerPosY = 0;
+        else if (emulatedPointerPosY >= physical_height)
+            emulatedPointerPosY = physical_height - 1;
+
+        SDL_Event ev;
+        ev.type = SDL_MOUSEMOTION;
+        ev.motion.x = emulatedPointerPosX;
+        ev.motion.y = emulatedPointerPosY;
+        SDL_PushEvent(&ev);
+    }
+
+    // gyro controls
+    if (gShockPrefs.gyroAiming) {
+        float gyro[3] = { 0.f };
+        SDL_SensorGetData(vitaGyro, gyro, 3);
+        relativeRightXAxis += (int)(-gyro[1] * (gShockPrefs.gyroAimingSpeed + 5) * deltaTime * GYRO_SPEED_MOD);
+        relativeRightYAxis += (int)(-gyro[0] * (gShockPrefs.gyroAimingSpeed + 5) * deltaTime * GYRO_SPEED_MOD);
+    }
+}
+
+void HandleControllerAxisEvent(SDL_ControllerAxisEvent motion)
+{
+    if (motion.axis == SDL_CONTROLLER_AXIS_LEFTX) {
+        if (abs(motion.value) > CONTROLLER_L_DEADZONE)
+            controllerLeftXAxis = motion.value;
+        else
+            controllerLeftXAxis = 0;
+    } else if (motion.axis == SDL_CONTROLLER_AXIS_LEFTY) {
+        if (abs(motion.value) > CONTROLLER_L_DEADZONE)
+            controllerLeftYAxis = motion.value;
+        else
+            controllerLeftYAxis = 0;
+    } else if (motion.axis == SDL_CONTROLLER_AXIS_RIGHTX) {
+        if (abs(motion.value) > CONTROLLER_R_DEADZONE)
+            controllerRightXAxis = motion.value;
+        else
+            controllerRightXAxis = 0;
+    } else if (motion.axis == SDL_CONTROLLER_AXIS_RIGHTY) {
+        if (abs(motion.value) > CONTROLLER_R_DEADZONE)
+            controllerRightYAxis = motion.value;
+        else
+            controllerRightYAxis = 0;
+    }
+
+	if (controllerLeftXAxis > CONTROLLER_L_DEADZONE)
+	{
+		if (!rightActive)
+		{
+			rightActive = true;
+			SDL_Event ev;
+			ev.type = SDL_TEXTINPUT;
+            ev.text.text[0] = 'd';
+            ev.text.text[1] = '\0';
+			SDL_PushEvent(&ev);
+		}
+	}
+	else if (rightActive)
+	{
+		rightActive = false;
+		SDL_Event ev;
+		ev.type = SDL_KEYUP;
+		ev.key.state = SDL_RELEASED;
+		ev.key.keysym.mod = KMOD_NONE;
+        ev.key.keysym.scancode = SDL_SCANCODE_D;
+		ev.key.keysym.sym = SDLK_d;
+		SDL_PushEvent(&ev);
+	}
+
+	if (controllerLeftXAxis < -CONTROLLER_L_DEADZONE)
+	{
+		if (!leftActive)
+		{
+			leftActive = true;
+			SDL_Event ev;
+			ev.type = SDL_TEXTINPUT;
+            ev.text.text[0] = 'a';
+            ev.text.text[1] = '\0';
+			SDL_PushEvent(&ev);
+		}
+	}
+	else if (leftActive)
+	{
+		leftActive = false;
+		SDL_Event ev;
+		ev.type = SDL_KEYUP;
+		ev.key.state = SDL_RELEASED;
+		ev.key.keysym.mod = KMOD_NONE;
+        ev.key.keysym.scancode = SDL_SCANCODE_A;
+		ev.key.keysym.sym = SDLK_a;
+		SDL_PushEvent(&ev);
+	}
+
+	if (controllerLeftYAxis < -CONTROLLER_L_DEADZONE)
+	{
+		if (!forwardActive)
+		{
+			forwardActive = true;
+			SDL_Event ev;
+			ev.type = SDL_TEXTINPUT;
+            ev.text.text[0] = 'w';
+            ev.text.text[1] = '\0';
+			SDL_PushEvent(&ev);
+		}
+        else
+        {
+            if (controllerLeftYAxis < -CONTROLLER_L_RUN_DEADZONE && !isRunning)
+            {
+                isRunning = true;
+                SDL_Event ev;
+                ev.type = SDL_TEXTINPUT;
+                ev.text.text[0] = 'W';
+                ev.text.text[1] = '\0';
+                SDL_PushEvent(&ev);
+            }
+
+            if (controllerLeftYAxis > -CONTROLLER_L_RUN_DEADZONE && isRunning)
+            {
+                isRunning = false;
+                SDL_Event ev;
+                ev.type = SDL_TEXTINPUT;
+                ev.text.text[0] = 'w';
+                ev.text.text[1] = '\0';
+                SDL_PushEvent(&ev);
+            }
+        }
+	}
+	else if (forwardActive)
+	{
+		forwardActive = false;
+		SDL_Event ev;
+		ev.type = SDL_KEYUP;
+		ev.key.state = SDL_RELEASED;
+		ev.key.keysym.mod = KMOD_NONE;
+        ev.key.keysym.scancode = SDL_SCANCODE_W;
+		ev.key.keysym.sym = SDLK_w;
+		SDL_PushEvent(&ev);
+	}
+
+	if (controllerLeftYAxis > CONTROLLER_L_DEADZONE)
+	{
+		if (!backActive)
+		{
+			backActive = true;
+			SDL_Event ev;
+			ev.type = SDL_TEXTINPUT;
+            ev.text.text[0] = 's';
+            ev.text.text[1] = '\0';
+			SDL_PushEvent(&ev);
+		}
+	}
+	else if (backActive)
+	{
+		backActive = false;
+		SDL_Event ev;
+		ev.type = SDL_KEYUP;
+		ev.key.state = SDL_RELEASED;
+		ev.key.keysym.mod = KMOD_NONE;
+        ev.key.keysym.scancode = SDL_SCANCODE_S;
+		ev.key.keysym.sym = SDLK_s;
+		SDL_PushEvent(&ev);
+	}
+}
+
+void VitaStartTextInput(int emulate_every_frame)
+{
+    SDL_StartTextInput();
+    vita_text_input_active = 1;
+    per_frame_keydown_emulation = emulate_every_frame;
+}
+#endif
+
 static void toggleFullScreen() {
     fullscreenActive = !fullscreenActive;
     SDL_SetWindowFullscreen(window, fullscreenActive ? SDL_WINDOW_FULLSCREEN_DESKTOP : 0);
@@ -336,7 +643,12 @@ void SetMouseXY(int mx, int my) {
     SDL_GetWindowSize(window, &physical_width, &physical_height);
 
     int w, h;
+#ifdef VITA
+    w = physical_width;
+    h = physical_height;
+#else
     SDL_RenderGetLogicalSize(renderer, &w, &h);
+#endif
 
     float scale_x = (float)physical_width / w;
     float scale_y = (float)physical_height / h;
@@ -476,6 +788,264 @@ uchar Ascii2Code[95] = {
     0x1E, // }
     0x32  // ~
 };
+
+#ifdef VITA
+void HandleControllerButtonEvent(SDL_ControllerButtonEvent button)
+{
+    bool keyboardPress = false;
+    bool mousePress = false;
+    Uint8 mouseBtn;
+    SDL_Scancode scancode;
+    SDL_Keycode keycode;
+    SDL_Keymod mod_state = KMOD_NONE;
+    int mouse_mod = 0;
+
+    switch (button.button) {
+    case SDL_CONTROLLER_BUTTON_A:
+        // jump
+        keyboardPress = true;
+        scancode = SDL_SCANCODE_SPACE;
+        keycode = SDLK_SPACE;
+        break;
+    case SDL_CONTROLLER_BUTTON_B:
+        // crouch cycle
+        keyboardPress = true;
+
+        switch(next_control_stance)
+        {
+            case Stand:
+                if (button.type == SDL_CONTROLLERBUTTONUP)
+                    next_control_stance = Crouch;
+                scancode = SDL_SCANCODE_T;
+                keycode = SDLK_t;
+                break;
+            case Crouch:
+                if (button.type == SDL_CONTROLLERBUTTONUP)
+                    next_control_stance = Prone;
+                scancode = SDL_SCANCODE_G;
+                keycode = SDLK_g;
+                break;
+            case Prone:
+                if (button.type == SDL_CONTROLLERBUTTONUP)
+                    next_control_stance = Stand;
+                scancode = SDL_SCANCODE_B;
+                keycode = SDLK_b;
+                break;
+            default:
+                break;
+        }
+        break;
+    case SDL_CONTROLLER_BUTTON_X:
+        // LMB w/shift (quick pickup)
+        mousePress = true;
+        mouseBtn = SDL_BUTTON_LEFT;
+        mouse_mod = 1;
+        break;
+    case SDL_CONTROLLER_BUTTON_Y:
+        // next weapon
+        keyboardPress = true;
+        scancode = SDL_SCANCODE_TAB;
+        keycode = SDLK_TAB;
+        break;
+    case SDL_CONTROLLER_BUTTON_BACK:
+        // menu
+        keyboardPress = true;
+        scancode = SDL_SCANCODE_ESCAPE;
+        keycode = SDLK_ESCAPE;
+        break;
+    case SDL_CONTROLLER_BUTTON_START:
+        // use drugs
+        keyboardPress = true;
+        scancode = SDL_SCANCODE_O;
+        keycode = SDLK_o;
+        break;
+    case SDL_CONTROLLER_BUTTON_LEFTSHOULDER:
+        // LMB
+        mousePress = true;
+        mouseBtn = SDL_BUTTON_LEFT;
+        break;
+    case SDL_CONTROLLER_BUTTON_RIGHTSHOULDER:
+        // RMB
+        mousePress = true;
+        mouseBtn = SDL_BUTTON_RIGHT;
+        break;
+    case SDL_CONTROLLER_BUTTON_DPAD_UP:
+        // equip/use grenade
+        keyboardPress = true;
+        scancode = SDL_SCANCODE_U;
+        keycode = SDLK_u;
+        break;
+    case SDL_CONTROLLER_BUTTON_DPAD_DOWN:
+        // toggle cursor
+        keyboardPress = true;
+        scancode = SDL_SCANCODE_F;
+        keycode = SDLK_f;
+        break;
+    case SDL_CONTROLLER_BUTTON_DPAD_LEFT:
+        // lean left
+        keyboardPress = true;
+        scancode = SDL_SCANCODE_Q;
+        keycode = SDLK_q;
+        break;
+    case SDL_CONTROLLER_BUTTON_DPAD_RIGHT:
+        // lean right
+        keyboardPress = true;
+        scancode = SDL_SCANCODE_E;
+        keycode = SDLK_e;
+        break;
+    default:
+        break;
+    }
+
+    if (keyboardPress) {
+        if (button.type == SDL_CONTROLLERBUTTONDOWN)
+        {
+            SDL_Event ev_txt;
+            ev_txt.type = SDL_TEXTINPUT;
+            // check if it's ascii event maybe?
+            ev_txt.text.text[0] = keycode;
+            ev_txt.text.text[1] = '\0';
+            SDL_PushEvent(&ev_txt);
+        }
+
+        SDL_Event ev_kbd;
+        ev_kbd.type = (button.type == SDL_CONTROLLERBUTTONDOWN) ? SDL_KEYDOWN : SDL_KEYUP;
+        ev_kbd.key.state = (button.type == SDL_CONTROLLERBUTTONDOWN) ? SDL_PRESSED : SDL_RELEASED;
+        ev_kbd.key.keysym.mod = mod_state;
+        ev_kbd.key.keysym.scancode = scancode;
+        ev_kbd.key.keysym.sym = keycode;
+        SDL_PushEvent(&ev_kbd);
+    } else if (mousePress) {
+        bool down = (button.type == SDL_CONTROLLERBUTTONDOWN);
+        ss_mouse_event mouseEvent = {0};
+
+        switch (mouseBtn) {
+            case SDL_BUTTON_LEFT:
+                mouseEvent.type = down ? MOUSE_LDOWN : MOUSE_LUP;
+                mouseEvent.buttons |= down ? (1 << MOUSE_LBUTTON) : 0;
+                break;
+
+            case SDL_BUTTON_RIGHT:
+                mouseEvent.type = down ? MOUSE_RDOWN : MOUSE_RUP;
+                mouseEvent.buttons |= down ? (1 << MOUSE_RBUTTON) : 0;
+                break;
+        }
+
+        mouseEvent.x = MouseX;
+        mouseEvent.y = MouseY;
+        mouseEvent.timestamp = mouse_get_time();
+        mouseEvent.modifiers = mouse_mod;
+        addMouseEvent(&mouseEvent);
+    }
+}
+
+void HandleTouchEvent(SDL_TouchFingerEvent event)
+{
+    // ignore back touchpad
+    if (event.touchId != 0) {
+        if (event.type == SDL_FINGERDOWN) {
+            ++num_rear_touches;
+            if (num_rear_touches == 1) {
+                first_finger_rear_id = event.fingerId;
+                rear_start_pos_y = event.y;
+            }
+        } else if (event.type == SDL_FINGERUP) {
+            --num_rear_touches;
+        }
+
+        if (first_finger_rear_id == event.fingerId) {
+            if (event.type == SDL_FINGERUP) {
+                float swipe_size = event.y - rear_start_pos_y;
+
+                if (fabs(swipe_size) > MFD_SWIPE_SIZE) {
+                    uint32_t mfd_id = event.x < 0.5f ? MFD_LEFT : MFD_RIGHT;
+
+                    if (swipe_size > 0) {
+                        mfd_next_slot(mfd_id);
+                    } else {
+                        mfd_previous_slot(mfd_id);
+                    }
+                }
+            }
+        }
+
+        return;
+    }
+
+    if (event.type == SDL_FINGERDOWN) {
+        ++numTouches;
+        if (numTouches == 1) {
+            firstFingerId = event.fingerId;
+        }
+    } else if (event.type == SDL_FINGERUP) {
+        --numTouches;
+    }
+
+    if (firstFingerId == event.fingerId) {
+        int physical_width, physical_height;
+        SDL_GetWindowSize(window, &physical_width, &physical_height);
+
+        emulatedPointerPosX = (float)(VITA_FULLSCREEN_WIDTH * event.x - destRect.x) * ((float)(physical_width) / destRect.w);
+        emulatedPointerPosY = (float)(VITA_FULLSCREEN_HEIGHT * event.y - destRect.y) * ((float)(physical_height) / destRect.h);
+
+        float emulatedPointerPosDX = (float)(VITA_FULLSCREEN_WIDTH * event.dx) * ((float)(physical_width) / destRect.w);
+        float emulatedPointerPosDY = (float)(VITA_FULLSCREEN_HEIGHT * event.dy) * ((float)(physical_height) / destRect.h);
+
+        if (emulatedPointerPosX < 0)
+            emulatedPointerPosX = 0;
+        else if (emulatedPointerPosX >= physical_width)
+            emulatedPointerPosX = physical_width - 1;
+
+        if (emulatedPointerPosY < 0)
+            emulatedPointerPosY = 0;
+        else if (emulatedPointerPosY >= physical_height)
+            emulatedPointerPosY = physical_height - 1;
+
+        {
+            // call this first; it sets MouseX and MouseY
+            if (SDL_GetRelativeMouseMode() == SDL_TRUE) {
+                SetMouseXY(MouseX + emulatedPointerPosDX, MouseY + emulatedPointerPosDY);
+            } else {
+                SetMouseXY(emulatedPointerPosX, emulatedPointerPosY);
+            }
+
+            ss_mouse_event mouseEvent = {0};
+            mouseEvent.type = MOUSE_MOTION;
+            mouseEvent.x = MouseX;
+            mouseEvent.y = MouseY;
+            mouseEvent.buttons = 0;
+            mouseEvent.buttons |= (1 << MOUSE_LBUTTON);
+            mouseEvent.timestamp = mouse_get_time();
+            addMouseEvent(&mouseEvent);
+
+            if (TriggerRelMouseMode) {
+                TriggerRelMouseMode = FALSE;
+
+                SDL_SetRelativeMouseMode(SDL_TRUE);
+                // throw away this first relative mouse reading
+                int mvelx, mvely;
+                get_mouselook_vel(&mvelx, &mvely);
+            }
+        }
+
+        if (event.type == SDL_FINGERDOWN || event.type == SDL_FINGERUP) {
+            bool down = (event.type == SDL_FINGERDOWN);
+            ss_mouse_event mouseEvent = {0};
+
+            mouseEvent.type = down ? MOUSE_LDOWN : MOUSE_LUP;
+            mouseEvent.buttons |= down ? (1 << MOUSE_LBUTTON) : 0;
+
+            bool shifted = ((SDL_GetModState() & KMOD_SHIFT) != 0);
+
+            mouseEvent.x = MouseX;
+            mouseEvent.y = MouseY;
+            mouseEvent.timestamp = mouse_get_time();
+            mouseEvent.modifiers = (shifted ? 1 : 0);
+            addMouseEvent(&mouseEvent);
+        }
+    }
+}
+#endif
 
 void pump_events(void) {
     SDL_Event ev;
@@ -617,6 +1187,17 @@ void pump_events(void) {
         } break;
 
         case SDL_TEXTINPUT: {
+#ifdef VITA
+            if (vita_text_input_active) {
+                text_input_active = 1;
+                strncpy(vita_input_text, ev.text.text, VITA_TEXT_BUFFER_SIZE);
+                vita_text_input_active = 0;
+
+                if (per_frame_keydown_emulation) {
+                    return;
+                }
+            }
+#endif
             uint32_t len = strlen(ev.text.text);
 
             // for every utf8 char in null-terminated string
@@ -757,8 +1338,40 @@ void pump_events(void) {
                 break;
             }
             break;
+#ifdef VITA
+            case SDL_FINGERDOWN:
+            case SDL_FINGERUP:
+            case SDL_FINGERMOTION:
+                HandleTouchEvent(ev.tfinger);
+                break;
+            case SDL_CONTROLLERDEVICEREMOVED:
+                if (gameController != NULL) {
+                    const SDL_GameController* removedController = SDL_GameControllerFromInstanceID(ev.jdevice.which);
+                    if (removedController == gameController) {
+                        SDL_GameControllerClose(gameController);
+                        gameController = NULL;
+                    }
+                }
+                break;
+            case SDL_CONTROLLERDEVICEADDED:
+                if (gameController == NULL) {
+                    gameController = SDL_GameControllerOpen(ev.jdevice.which);
+                }
+                break;
+            case SDL_CONTROLLERAXISMOTION:
+                HandleControllerAxisEvent(ev.caxis);
+                break;
+            case SDL_CONTROLLERBUTTONDOWN:
+            case SDL_CONTROLLERBUTTONUP:
+                HandleControllerButtonEvent(ev.cbutton);
+                break;
+#endif
         }
     }
+#ifdef VITA
+    ProcessControllerAxisMotion();
+    EmulateTextInput();
+#endif
 }
 
 //===============================================================
@@ -871,9 +1484,10 @@ kbs_event kb_look_next(void) {
 void kb_flush(void) {
     // http://mirror.informatimago.com/next/developer.apple.com/documentation/Carbon/Reference/Event_Manager/event_mgr_ref/function_group_5.html#//apple_ref/c/func/FlushEvents
     // FlushEvents(keyDownMask | autoKeyMask, 0);
-
+#ifndef VITA
+    // don't flush on vita for now. this interrupts key up event during emulated text input and messes things up on game startup ("stucked in" buttons)
     SDL_FlushEvents(SDL_KEYDOWN, SDL_KEYUP); // Note: that's a range!
-
+#endif
     nextKBevent = 0; // this flushes the keyboard events already buffered - TODO is that desirable?
 }
 
@@ -936,7 +1550,14 @@ errtype mouse_get_xy(short *x, short *y) {
 
 void middleize_mouse(void) {
     int w, h;
+
+#ifdef VITA
+    SDL_GetWindowSize(window, &w, &h);
+    emulatedPointerPosX = w / 2;
+    emulatedPointerPosY = h / 2;
+#else
     SDL_RenderGetLogicalSize(renderer, &w, &h);
+#endif
 
     MouseX = latestMouseEvent.x = w / 2;
     MouseY = latestMouseEvent.y = h / 2;
@@ -946,7 +1567,12 @@ void get_mouselook_vel(int *vx, int *vy) {
     if (SDL_ShowCursor(SDL_QUERY) == SDL_ENABLE)
         *vx = *vy = 0;
     else {
+#ifdef VITA
+        *vx = relativeRightXAxis;
+        *vy = relativeRightYAxis;
+#else
         SDL_GetRelativeMouseState(vx, vy);
+#endif
 
         *vx += MouseChaosX;
         MouseChaosX = 0;

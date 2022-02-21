@@ -24,4 +24,8 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 void pump_events(void);
 void set_mouse_chaos(short dx, short dy);
 
+#ifdef VITA
+void VitaStartTextInput(int emulate_every_frame);
+#endif
+
 #endif

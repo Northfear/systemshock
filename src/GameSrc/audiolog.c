@@ -43,8 +43,6 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 #define ALOG_MUSIC_DUCK 0.7
 
-extern SDL_AudioStream *cutscene_audiostream; // see cutsloop.c
-
 static uint8_t *audiolog_audiobuffer = NULL;
 static uint8_t *audiolog_audiobuffer_pos = NULL;
 static int audiolog_audiobuffer_size; // in blocks of MOVIE_DEFAULT_BLOCKLEN
@@ -61,9 +59,29 @@ extern uchar curr_vol_lev;
 extern uchar curr_alog_vol;
 extern char which_lang;
 
-extern SDL_AudioDeviceID device;
+static SDL_mutex *AudiologMutex;
 
 errtype audiolog_init(void) { return OK; }
+
+void audiolog_callback(void *userdata, Uint8 *stream, int len) {
+
+    if (audiolog_audiobuffer_size > 0) {
+        SDL_LockMutex(AudiologMutex);
+
+        if (audiolog_audiobuffer) {
+            size_t byes_to_copy = audiolog_audiobuffer_size > MOVIE_DEFAULT_BLOCKLEN ? MOVIE_DEFAULT_BLOCKLEN : audiolog_audiobuffer_size;
+            //SDL_memset(stream, 0, byes_to_copy);
+            memcpy(stream, audiolog_audiobuffer_pos, byes_to_copy);
+            audiolog_audiobuffer_pos += byes_to_copy;
+            audiolog_audiobuffer_size -= byes_to_copy;
+        }
+
+        SDL_UnlockMutex(AudiologMutex);
+    } else {
+        audiolog_stop();
+        return;
+    }
+}
 
 errtype audiolog_play(int email_id) {
     int new_alog_fn;
@@ -108,17 +126,22 @@ errtype audiolog_play(int email_id) {
         return ERR_FREAD;
     }
 
-    audiolog_audiobuffer_size = AfileAudioLength(palog);
-    audiolog_audiobuffer = (uint8_t *)malloc(audiolog_audiobuffer_size * MOVIE_DEFAULT_BLOCKLEN);
-    AfileGetAudio(palog, audiolog_audiobuffer);
-
     DEBUG("%s: Playing email", __FUNCTION__);
 
-    SDL_PauseAudioDevice(device, 1);
-    SDL_Delay(1);
+    SDL_AudioCVT cvt;
+    SDL_BuildAudioCVT(&cvt, AUDIO_U8, 1, fix_int(palog->a.sampleRate), AUDIO_S16SYS, 2, 48000);
+    cvt.len = AfileAudioLength(palog) * MOVIE_DEFAULT_BLOCKLEN;
+    cvt.buf = (Uint8 *) malloc(cvt.len * cvt.len_mult);
+    AfileGetAudio(palog, cvt.buf);
+    SDL_ConvertAudio(&cvt);
 
-    cutscene_audiostream = SDL_NewAudioStream(AUDIO_U8, 1, fix_int(palog->a.sampleRate), AUDIO_S16SYS, 2, 48000);
+    free(palog);
 
+    //audiolog_audiobuffer = malloc(cvt.len_cvt);
+    //memcpy(audiolog_audiobuffer, cvt.buf, cvt.len_cvt);
+    //free(cvt.buf);
+    audiolog_audiobuffer = cvt.buf;
+    audiolog_audiobuffer_size = cvt.len_cvt;
     audiolog_audiobuffer_pos = audiolog_audiobuffer;
 
     end_wait();
@@ -132,6 +155,9 @@ errtype audiolog_play(int email_id) {
         curr_vol_lev = curr_vol_lev * ALOG_MUSIC_DUCK;
         MacTuneUpdateVolume();
     }
+
+    snd_stop_music();
+    Mix_HookMusic((void (*)(void*, Uint8*, int))audiolog_callback, NULL);
 
     return OK;
 }
@@ -149,17 +175,14 @@ void audiolog_stop(void) {
         MacTuneUpdateVolume();
     }
 
-    if (cutscene_audiostream != NULL) {
-        SDL_PauseAudioDevice(device, 1);
-        SDL_Delay(1);
+    if (audiolog_audiobuffer) {
+        SDL_LockMutex(AudiologMutex);
 
-        SDL_FreeAudioStream(cutscene_audiostream);
-        cutscene_audiostream = NULL;
+        free(audiolog_audiobuffer);
+        audiolog_audiobuffer = NULL;
+        snd_resume_music();
 
-        if (audiolog_audiobuffer) {
-            free(audiolog_audiobuffer);
-            audiolog_audiobuffer = NULL;
-        }
+        SDL_UnlockMutex(AudiologMutex);
     }
 
     curr_alog = -1;
@@ -176,24 +199,6 @@ void audiolog_stop(void) {
 }
 
 errtype audiolog_loop_callback(void) {
-    if (cutscene_audiostream) {
-        SDL_PauseAudioDevice(device, 0);
-
-        if (audiolog_audiobuffer_size > 0) {
-            int i, vol = curr_alog_vol * 127 / 100; // convert from 0-100 to 0-127
-
-            for (i = 0; i < MOVIE_DEFAULT_BLOCKLEN; i++)
-                audiolog_audiobuffer_pos[i] = 128 + ((int)audiolog_audiobuffer_pos[i] - 128) * vol / 128;
-
-            SDL_AudioStreamPut(cutscene_audiostream, audiolog_audiobuffer_pos, MOVIE_DEFAULT_BLOCKLEN);
-            audiolog_audiobuffer_pos += MOVIE_DEFAULT_BLOCKLEN;
-            audiolog_audiobuffer_size--;
-        }
-
-        if (SDL_AudioStreamAvailable(cutscene_audiostream) == 0)
-            audiolog_stop();
-    }
-
     return OK;
 }
 

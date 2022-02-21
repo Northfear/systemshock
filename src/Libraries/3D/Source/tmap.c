@@ -378,6 +378,12 @@ int do_tmap(int n, g3s_phandle *vp, grs_bitmap *bm) {
     g3s_phandle *src;
     g3s_phandle tempHand;
 
+#ifdef VITA
+    // it's crashing sometimes on "if (bm->type == BMT_RSD8)" line
+    if (bm == NULL)
+        return CLIP_ALL;
+#endif
+
 // clang-format off
 #ifdef stereo_on
   test    _g3d_stereo,1

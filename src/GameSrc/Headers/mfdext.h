@@ -126,4 +126,9 @@ extern void mfd_change_slot(ubyte mfd_id, ubyte l_new);
 extern void save_mfd_slot(int mfd_id);
 extern void restore_mfd_slot(int mfd_id);
 
+#ifdef VITA
+void mfd_next_slot(ubyte mfd_id);
+void mfd_previous_slot(ubyte mfd_id);
+#endif
+
 #endif // __MFDEXT_H
